@@ -1,12 +1,49 @@
 use actix_proxy::{IntoHttpResponse, SendRequestError};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer};
 use awc::Client;
+use mongodb::{
+    bson::doc,
+    options::{ClientOptions, ServerApi, ServerApiVersion},
+};
+use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 
 struct AppConfig {
     proxypath: String,
     presets_api_url: String,
     presets_map: std::sync::RwLock<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Preset<'a> {
+    #[serde(borrow)]
+    testPreset: &'a str,
+}
+
+async fn connect_to_db() -> mongodb::error::Result<()> {
+    let db_uri = std::env::var("DB_URI").expect("Error: DB_URI not found");
+    let db_name = std::env::var("DB_NAME").expect("Error: DB_NAME not found");
+
+    let mut client_options = ClientOptions::parse(db_uri).await?;
+    // Set the server_api field of the client_options object to Stable API version 1
+    let server_api = ServerApi::builder().version(ServerApiVersion::V1).build();
+    client_options.server_api = Some(server_api);
+    // Create a new client and connect to the server
+    let client = mongodb::Client::with_options(client_options)?;
+    // Send a ping to confirm a successful connection
+    // client
+    //     .database(&db_name)
+    //     .run_command(doc! {"find": {}}, None)
+    //     .await?;
+
+    let db = client.database(&db_name);
+    let collection = db.collection::<Preset>("presets");
+    let mut cursor = collection.find(None, None).await.unwrap();
+
+    println!("Collection: {:?}", cursor.deserialize_current().unwrap());
+
+    Ok(())
 }
 
 async fn fetch_presets(
@@ -41,17 +78,11 @@ async fn proxy(
 ) -> Result<HttpResponse, SendRequestError> {
     let presets_map = app_config.presets_map.read().unwrap();
 
-    println!("PATH: {:?}", path);
-
     match presets_map.get(&path.0) {
-        Some(preset_data) => Ok(client
-            .get(format!(
-                "{}/{}/{}",
-                &app_config.proxypath, &preset_data, &path.1
-            ))
-            .send()
-            .await?
-            .into_http_response()),
+        Some(preset_data) => {
+            let url = format!("{}/{}/{}.jpg", &app_config.proxypath, &preset_data, &path.1);
+            Ok(client.get(&url).send().await?.into_http_response())
+        }
         None => Ok(HttpResponse::NotFound().finish()),
     }
 }
@@ -80,9 +111,12 @@ async fn main() -> std::io::Result<()> {
         std::env::var("PRESETS_API_URL").expect("Error: PRESETS_API_URL not found");
     let client = Client::default();
 
-    let presets_map = fetch_presets(&client, &presets_api_url)
-        .await
-        .unwrap_or_default();
+    let foo = connect_to_db().await.unwrap();
+
+    // let presets_map = fetch_presets(&client, &presets_api_url)
+    //     .await
+    //     .unwrap_or_default();
+    let presets_map = HashMap::from([("testImg".to_string(), "testImg".to_string())]);
 
     println!("PRESETS MAP: {:?}", presets_map);
 
