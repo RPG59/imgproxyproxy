@@ -1,54 +1,21 @@
-use actix_proxy::{IntoHttpResponse, SendRequestError};
-use actix_web::{get, web, App, HttpResponse, HttpServer};
-use awc::Client;
-use base64::{self, Engine};
+use warp::{http::Response, hyper::Body, Filter, Rejection, Reply};
+use warp_reverse_proxy::reverse_proxy_filter;
 
-struct AppState {
-    imgproxy_url: String,
+async fn log_response(response: Response<Body>) -> Result<impl Reply, Rejection> {
+    println!("{:?}", response);
+    Ok(response)
 }
 
-#[get("/proxy/{preset}/{path}")]
-async fn proxy(
-    client: web::Data<Client>,
-    app_state: web::Data<AppState>,
-    path: web::Path<(String, String)>,
-) -> Result<HttpResponse, SendRequestError> {
-    let request = client
-        .get(format!(
-            "{}/{}/{}",
-            app_state.imgproxy_url, &path.0, &path.1
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    println!("Status Code: {}", request.status());
-
-    if !request.status().is_success() {
-        let original_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&path.1)
-            .unwrap();
-        let original_url = std::str::from_utf8(&original_bytes).unwrap();
-
-        return Ok(client.get(original_url).send().await?.into_http_response());
-    }
-
-    Ok(request.into_http_response())
-
-    // Ok(HttpResponse::NotFound().finish())
+#[tokio::main]
+async fn main() {
+    let hello = warp::path!("hello" / String).map(|name| format!("Hello, {}!", name));
+    // // spawn base server
+    tokio::spawn(warp::serve(hello).run(([0, 0, 0, 0], 8080)));
+    // Forward request to localhost in other port
+    let app = warp::path!("test.jpg" / ..).and(
+        reverse_proxy_filter("".to_string(), "http://127.0.0.1:9999/".to_string()), // .and_then(log_response),
+    );
+    // spawn proxy server
+    warp::serve(app).run(([0, 0, 0, 0], 3030)).await;
 }
-
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(AppState {
-                imgproxy_url: std::env::var("IMGPROXY_URL").expect("Error: IMGPROXY_URL not found"),
-            }))
-            .app_data(web::Data::new(Client::default()))
-            .service(proxy)
-    })
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
-}
+// let url = "http://localhost:9999/test.jpg";
